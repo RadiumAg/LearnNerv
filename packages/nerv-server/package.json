@@ -1,0 +1,24 @@
+{
+  "name": "nerv-server",
+  "version": "1.5.7",
+  "description": "Server-side rendering for Nerv.js",
+  "author": "yuche",
+  "license": "MIT",
+  "main": "index.js",
+  "module": "dist/nerv.ssr.js",
+  "jsnext:main": "dist/nerv.ssr.js",
+  "types": "dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NervJS/nerv.git"
+  },
+  "dependencies": {
+    "nerv-shared": "1.4.0",
+    "nerv-utils": "1.4.5",
+    "nervjs": "1.5.7"
+  },
+  "bugs": {
+    "url": "https://github.com/NervJS/nerv/issues"
+  },
+  "homepage": "https://github.com/NervJS/nerv"
+}

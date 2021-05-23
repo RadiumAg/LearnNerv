@@ -1,0 +1,24 @@
+{
+  "name": "nerv-test-utils",
+  "version": "1.5.7",
+  "description": "Nerv test utils",
+  "main": "index.js",
+  "module": "dist/index.esm.js",
+  "author": "yuche",
+  "license": "MIT",
+  "dependencies": {
+    "nerv-server": "1.4.6",
+    "nerv-shared": "1.4.0",
+    "nerv-utils": "1.4.5",
+    "nervjs": "1.5.7",
+    "simulant": "^0.2.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NervJS/nerv.git"
+  },
+  "bugs": {
+    "url": "https://github.com/NervJS/nerv/issues"
+  },
+  "homepage": "https://github.com/NervJS/nerv"
+}
