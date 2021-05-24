@@ -1,4 +1,4 @@
-import { nextTick } from '../../nerv-utils/src'
+import nextTick from './util/next-tick'
 import { updateComponent } from './lifecycle'
 
 let items: any[] = []
@@ -10,14 +10,14 @@ export function enqueueRender (component) {
   }
 }
 
-export function rerender (isForce = false) {
+export function rerender () {
   let p
   const list = items
   items = []
   // tslint:disable-next-line:no-conditional-assignment
   while ((p = list.pop())) {
     if (p._dirty) {
-      updateComponent(p, isForce)
+      updateComponent(p)
     }
   }
 }

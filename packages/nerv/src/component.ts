@@ -1,58 +1,36 @@
+import { isFunction, extend, clone } from './util'
 import { enqueueRender } from './render-queue'
 import { updateComponent } from './lifecycle'
+import { IProps, ComponentLifecycle } from './types'
 
-import { Hook, HookEffect } from './hooks'
-import { isFunction,clone,extend } from 'lodash'
-import { ComponentLifecycle,Props } from 'react'
-import { CompositeComponent,Refs,EMPTY_CHILDREN,EMPTY_OBJ } from '../../nerv-shared/src'
-
-interface Component<P = {}, S = {}> extends ComponentLifecycle<P, S> {
-  _rendered: any
+interface Component<P = {}, S = {}> extends ComponentLifecycle<P, S > {
+  _rendered: any,
   dom: any
 }
 
-class Component<P, S> implements ComponentInst<P, S> {
+class Component<P, S> implements ComponentLifecycle<P, S> {
   public static defaultProps: {}
-  static getDerivedStateFromError? (error?): object | null
   state: Readonly<S>
-  props: Readonly<P> & Readonly<Props>
-  prevProps: P
-  prevState: S
-  prevContext: object
-  _parentComponent: Component<any, any>
-  vnode: CompositeComponent
+  props: Readonly<P> & Readonly<IProps>
   context: any
   _dirty = true
   _disable = true
   _pendingStates: any[] = []
-  _pendingCallbacks: Function[] = []
-  refs: Refs
-  isReactComponent: Object
-  _afterScheduleEffect = false
-  hooks: Hook[] = []
-  effects: HookEffect[] = EMPTY_CHILDREN
-  layoutEffects: HookEffect[] = EMPTY_CHILDREN
-
+  _pendingCallbacks: Function[]
   constructor (props?: P, context?: any) {
     if (!this.state) {
       this.state = {} as S
     }
-    this.props = props || ({} as P)
-    this.context = context || EMPTY_OBJ
-    this.refs = {}
+    this.props = props || {} as P
+    this.context = context || {}
   }
 
-  setState<K extends keyof S> (
-    state:
-      | ((prevState: Readonly<S>, props: P) => Pick<S, K> | S)
-      | (Pick<S, K> | S),
-    callback?: () => void
-  ): void {
+  setState<K extends keyof S> (state: Pick<S, K>, callback?: Function) {
     if (state) {
-      this._pendingStates.push(state)
+      (this._pendingStates = (this._pendingStates || [])).push(state)
     }
     if (isFunction(callback)) {
-      this._pendingCallbacks.push(callback)
+      (this._pendingCallbacks = (this._pendingCallbacks || [])).push(callback)
     }
     if (!this._disable) {
       enqueueRender(this)
@@ -74,31 +52,18 @@ class Component<P, S> implements ComponentInst<P, S> {
       }
       extend(stateClone, nextState)
     })
-
-    return stateClone as S
-  }
-
-  clearCallBacks () {
-    // cached the length of callbacks, or callbacks may increase by calling them in the same loop
-    let len = this._pendingCallbacks.length
-    while (this._dirty ? this._pendingCallbacks.length : len) {
-      const cb = this._pendingCallbacks.shift()!
-      cb.call(this)
-      len--
-    }
+    return stateClone
   }
 
   forceUpdate (callback?: Function) {
     if (isFunction(callback)) {
-      this._pendingCallbacks.push(callback)
+      (this._pendingCallbacks = (this._pendingCallbacks || [])).push(callback)
     }
     updateComponent(this, true)
   }
 
   // tslint:disable-next-line
-  public render(nextProps?: P, nextState?, nextContext?): any {}
+  public render (nextProps?: P, nextState?, nextContext?): any { }
 }
-
-Component.prototype.isReactComponent = EMPTY_OBJ
 
 export default Component

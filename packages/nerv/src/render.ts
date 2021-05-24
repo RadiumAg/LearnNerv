@@ -1,36 +1,29 @@
 import { mountVNode, flushMount } from './lifecycle'
-import { patch } from './vdom/patch'
-import options from './options'
-import { mountElement } from './vdom/create-element'
-import { VirtualNode } from 'nervjs/dist/src/types'
-import { isComposite } from '../../nerv-shared/src'
+import { isString, isNumber } from './util'
+import { isWidget, isVNode, isStateLess } from './vdom/vnode/types'
+import { IVNode, VirtualNode } from './types'
 
-export function render (
-  vnode: VirtualNode,
-  container: Element,
-  callback?: Function
-) {
-  if (!container) {
+function isVChild (vnode): vnode is string | number | IVNode {
+  return isVNode(vnode) || isString(vnode) || isNumber(vnode)
+}
+
+export function render (vnode: VirtualNode, container: Element, callback?: Function) {
+  if (!isVChild(vnode) && !isWidget(vnode) && !isStateLess(vnode)) {
+    return null
+  }
+  /* istanbul ignore if */
+  if (!container || container.nodeType !== 1) {
     throw new Error(`${container} should be a DOM Element`)
   }
-  const lastVnode = (container as any)._component
-  let dom
-  options.roots.push(vnode)
-  if (lastVnode !== undefined) {
-    options.roots = options.roots.filter((item) => item !== lastVnode)
-    dom = patch(lastVnode, vnode, container, {})
-  } else {
-    dom = mountVNode(vnode, {})
-    mountElement(dom, container)
-  }
-
-  if (container) {
-    (container as any)._component = vnode
+  const dom = mountVNode(vnode, {})
+  if (dom) {
+    container.appendChild(dom)
   }
   flushMount()
+
   if (callback) {
     callback()
   }
 
-  return isComposite(vnode) ? vnode.component : dom
+  return (vnode as any).component || dom
 }

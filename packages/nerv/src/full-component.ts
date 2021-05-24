@@ -1,66 +1,35 @@
+import { extend, clone } from './util'
+import { mountComponent, reRenderComponent, unmountComponent } from './lifecycle'
+import Component from './component'
 
-import { isUndefined,isArray } from 'lodash'
-import { Component } from 'nervjs'
-import { Ref } from 'react'
-import { CompositeComponent,VType } from '../../nerv-shared/src'
-import { mountComponent,getContextByContextType,reRenderComponent,unmountComponent } from './lifecycle'
-import options from './options'
-
-class ComponentWrapper implements CompositeComponent {
-  vtype = VType.Composite
-  type: any
+class ComponentWrapper {
+  type = 'Widget'
+  ComponentType: any
   name: string
   _owner: any
   props: any
+  parentContext: any
   component: Component<any, any>
   context: any
-  key: any
-  dom: Element | null
-  _rendered: any
-  ref: Ref
 
-  constructor (type, props) {
-    this.type = type
-    this.name = type.name
-    if (isUndefined(this.name)) {
-      const names = type.toString().match(/^function\s*([^\s(]+)/)
-      this.name = isArray(names) ? names[0] : 'Component'
-    }
-    type.displayName = this.name
+  constructor (ComponentType, props) {
+    this.ComponentType = ComponentType
+    this.name = ComponentType.name || ComponentType.toString().match(/^function\s*([^\s(]+)/)[1]
+    ComponentType.displayName = this.name
     this._owner = props.owner
     delete props.owner
-    if ((this.ref = props.ref)) {
-      delete props.ref
-    }
-    if (type._forwarded) {
-      if (!isUndefined(this.ref)) {
-        props.ref = this.ref
-      }
-      delete this.ref
-    }
-    this.props = props
-    this.key = props.key || null
-    this.dom = null
-    options.afterCreate(this)
+    this.props = extend(clone(ComponentType.defaultProps || {}), props)
   }
 
-  init (parentContext, parentComponent) {
-    options.beforeMount(this)
-    const dom = mountComponent(this, parentContext, parentComponent)
-    options.afterMount(this)
-    return dom
+  init () {
+    return mountComponent(this)
   }
 
-  update (previous, current, parentContext, domNode?) {
-    this.context = getContextByContextType(this, parentContext)
-    options.beforeUpdate(this)
-    const dom = reRenderComponent(previous, this)
-    options.afterUpdate(this)
-    return dom
+  update (previous, domNode?) {
+    return reRenderComponent(previous, this)
   }
 
-  destroy () {
-    options.beforeUnmount(this)
+  destroy (dom?: Element) {
     unmountComponent(this)
   }
 }

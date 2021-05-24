@@ -1,55 +1,59 @@
-import createVNode from './create-vnode'
+import VNode from './vnode/vnode'
 import createVText from './create-vtext'
-import { createVoid } from './create-void'
-import { isArray,isString,isNumber } from 'lodash'
-import { VirtualChildren,VirtualNode } from 'nervjs/dist/src/types'
-import { Props,isValidElement } from 'react'
-import { EMPTY_CHILDREN,VNode } from '../../../nerv-shared/src'
-
-
-function h (type: string, props: Props, children?: VirtualChildren) {
-  let childNodes
-  if (props.children) {
-    if (!children) {
+import { isVNode, isVText, isWidget, isStateLess } from './vnode/types'
+import { isString, isArray, isNumber } from '../util'
+import { IProps, VirtualChildren, VirtualNode } from '../types'
+function h (tagName: string, props: IProps, children?: VirtualChildren) {
+  let key
+  let namespace
+  let owner
+  const childNodes = []
+  if (!children && isChildren(props)) {
+    children = props
+    props = {}
+  }
+  props = props || {}
+  if (props.hasOwnProperty('key') && props.key) {
+    key = props.key
+    delete props.key
+  }
+  if (props.hasOwnProperty('namespace') && props.namespace) {
+    namespace = props.namespace
+    delete props.namespace
+  }
+  if (props.hasOwnProperty('owner')) {
+    owner = props.owner
+    delete props.owner
+  }
+  if (props.hasOwnProperty('children') && props.children) {
+    if (!children || !children.length) {
       children = props.children
     }
+    delete props.children
   }
-  if (isArray(children)) {
-    childNodes = []
-    addChildren(childNodes, children as any, type)
-  } else if (isString(children) || isNumber(children)) {
-    children = createVText(String(children))
-  } else if (!isValidElement(children)) {
-    children = EMPTY_CHILDREN
+  if (children) {
+    addChildren(childNodes, children, tagName)
   }
-  props.children = childNodes !== undefined ? childNodes : children
-  return createVNode(
-    type,
-    props,
-    props.children as any[],
-    props.key,
-    props.namespace,
-    props.owner,
-    props.ref
-  ) as VNode
+  return new VNode(tagName, props, childNodes, key, namespace, owner)
 }
 
-function addChildren (
-  childNodes: VirtualNode[],
-  children: VirtualNode | VirtualNode[],
-  type: string
-) {
+function addChildren (childNodes: VirtualNode[], children: VirtualNode, tagName: string) {
   if (isString(children) || isNumber(children)) {
-    childNodes.push(createVText(String(children)))
-  } else if (isValidElement(children)) {
+    children = String(children)
+    childNodes.push(createVText(children))
+  } else if (isChild(children)) {
     childNodes.push(children)
   } else if (isArray(children)) {
-    for (let i = 0; i < children.length; i++) {
-      addChildren(childNodes, children[i], type)
-    }
-  } else {
-    childNodes.push(createVoid())
+    (children as any[]).forEach((child) => addChildren(childNodes, child, tagName))
   }
+}
+
+function isChild (node): node is VirtualNode {
+  return isVNode(node) || isVText(node) || isWidget(node) || isStateLess(node)
+}
+
+function isChildren (x): x is VirtualChildren {
+  return isString(x) || isArray(x) || isChild(x)
 }
 
 export default h

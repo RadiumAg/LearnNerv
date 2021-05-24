@@ -1,152 +1,75 @@
-// import { extend, isFunction, isNumber, isString } from 'nerv-utils'
+import { extend, isFunction, isNumber, isString, isObject } from './util'
 import CurrentOwner from './current-owner'
 import createElement from './vdom/create-element'
 import createVText from './vdom/create-vtext'
-import { createVoid } from './vdom/create-void'
+import diff from './vdom/diff'
 import patch from './vdom/patch'
-
+import RefHook from './hooks/ref-hook'
+import { isVNode } from './vdom/vnode/types'
 import FullComponent from './full-component'
-import { unmount } from './vdom/unmount'
-import Ref from './vdom/ref'
-import Component from './component'
-import { invokeEffects } from './hooks'
-import { Emiter } from './emiter'
-import { isFunction,isNumber,isString,isArray,isUndefined,extend,clone } from 'lodash'
-import { VText,VVoid,VNode,isInvalid,isNullOrUndef,isComponent,EMPTY_OBJ,isComposite,CompositeComponent,VType } from '../../nerv-shared/src'
-export type ParentContext = Record<string, Emiter<any>>
+import Stateless from './stateless-component'
 
 const readyComponents: any[] = []
 
-export function errorCatcher (fn: Function, component: Component<any, any>) {
-  try {
-    return fn()
-  } catch (error) {
-    errorHandler(component, error)
+export function mountVNode (vnode, parentContext: any) {
+  if (isObject(vnode)) {
+    vnode.parentContext = parentContext
   }
+  return createElement(vnode)
 }
 
-function errorHandler (component: Component<any, any>, error) {
-  // if(!component) { throw error ; return }
-  let boundary
-  while (true) {
-    const { getDerivedStateFromError } = (component as any).constructor
-    if (isFunction(getDerivedStateFromError) || isFunction(component.componentDidCatch)) {
-      boundary = component
-      break
-    } else if (component._parentComponent) {
-      component = component._parentComponent
-    } else {
-      break
-    }
-  }
-  if (boundary) {
-    const { getDerivedStateFromError } = (boundary as any).constructor
-    const _disable = boundary._disable
-    boundary._disable = false
-    if (isFunction(getDerivedStateFromError)) {
-      component.setState(getDerivedStateFromError(error))
-    } else if (isFunction(component.componentDidCatch)) {
-      boundary.componentDidCatch(error)
-    }
-    boundary._disable = _disable
-  } else {
-    throw error
-  }
-}
-
-export function ensureVirtualNode (rendered: any): VText | VVoid | VNode {
-  if (isNumber(rendered) || isString(rendered)) {
-    return createVText(rendered)
-  } else if (isInvalid(rendered)) {
-    return createVoid()
-  } else if (isArray(rendered)) {
-    rendered = rendered.length === 0 ?  createVoid() : rendered.map(ensureVirtualNode)
-  }
-  return rendered
-}
-
-export function mountVNode (vnode, parentContext: any, parentComponent?) {
-  return createElement(vnode, false, parentContext, parentComponent)
-}
-
-export function getContextByContextType (vnode: FullComponent, parentContext: ParentContext) {
-  const contextType = vnode.type.contextType
-  const hasContextType = !isUndefined(contextType)
-  const provider = hasContextType ? (parentContext[contextType._id]) : null
-  const context = hasContextType
-    ? (
-      !isNullOrUndef(provider) ? provider.value : contextType._defaultValue
-    )
-    : parentContext
-  return context
-}
-
-export function mountComponent (
-  vnode: FullComponent,
-  parentContext: ParentContext,
-  parentComponent
-) {
-  const ref = vnode.ref
-  if (vnode.type.prototype && vnode.type.prototype.render) {
-    const context = getContextByContextType(vnode, parentContext)
-    vnode.component = new vnode.type(vnode.props, context)
-  } else {
-    const c = new Component(vnode.props, parentContext)
-    c.render = () => vnode.type.call(c, c.props, c.context)
-    vnode.component = c
+export function mountComponent (vnode: FullComponent) {
+  const parentContext = vnode.parentContext
+  const componentPrototype = vnode.ComponentType.prototype
+  if (componentPrototype && isFunction(componentPrototype.render)) {
+    vnode.component = new vnode.ComponentType(vnode.props, parentContext)
   }
   const component = vnode.component
-  component.vnode = vnode
-  if (isComponent(parentComponent)) {
-    component._parentComponent = parentComponent as any
-  }
-  const newState = callGetDerivedStateFromProps(vnode.props, component.state, component)
-  if (!isUndefined(newState)) {
-    component.state = newState
-  }
-  if (!hasNewLifecycle(component) && isFunction(component.componentWillMount)) {
-    errorCatcher(() => {
-      (component as any).componentWillMount()
-    }, component)
+  component.context = vnode.context || parentContext
+  if (isFunction(component.componentWillMount)) {
+    component.componentWillMount()
     component.state = component.getState()
-    component.clearCallBacks()
   }
   component._dirty = false
   const rendered = renderComponent(component)
-  rendered.parentVNode = vnode
   component._rendered = rendered
-  if (!isNullOrUndef(ref)) {
-    Ref.attach(vnode, ref, vnode.dom as Element)
-  }
-  const dom = (vnode.dom = mountVNode(
-    rendered,
-    getChildContext(component, parentContext),
-    component
-  ) as Element)
-  invokeEffects(component)
   if (isFunction(component.componentDidMount)) {
     readyComponents.push(component)
   }
+  if (isFunction(vnode.props.ref)) {
+    readyComponents.push(() => vnode.props.ref(component))
+  }
+  const dom = mountVNode(rendered, getChildContext(component, parentContext))
+  component.dom = dom
   component._disable = false
   return dom
 }
 
-export function getChildContext (component, context = EMPTY_OBJ) {
-  if (isFunction(component.getChildContext)) {
-    return extend(clone(context), component.getChildContext())
+export function mountStatelessComponent (vnode: Stateless) {
+  let ref = vnode.props.ref
+  delete vnode.props.ref
+  vnode._renderd = vnode.tagName(vnode.props, vnode.parentContext)
+  const rendered = vnode._renderd
+  if (isVNode(rendered) && isFunction(ref)) {
+    ref = new RefHook(ref)
+    rendered.props.ref = ref
   }
-  return clone(context)
+  return mountVNode(rendered, vnode.parentContext)
 }
 
-export function renderComponent (component: Component<any, any>) {
+export function getChildContext (component, context) {
+  if (component.getChildContext) {
+    return extend(context, component.getChildContext())
+  }
+  return context
+}
+
+export function renderComponent (component) {
   CurrentOwner.current = component
-  CurrentOwner.index = 0
-  invokeEffects(component, true)
-  let rendered
-  errorCatcher(() => {
-    rendered = component.render()
-  }, component)
-  rendered = ensureVirtualNode(rendered)
+  let rendered = component.render()
+  if (isNumber(rendered) || isString(rendered)) {
+    rendered = createVText(rendered)
+  }
   CurrentOwner.current = null
   return rendered
 }
@@ -155,42 +78,24 @@ export function flushMount () {
   if (!readyComponents.length) {
     return
   }
-  // @TODO: perf
   const queue = readyComponents.slice(0)
   readyComponents.length = 0
   queue.forEach((item) => {
     if (isFunction(item)) {
       item()
     } else if (item.componentDidMount) {
-      errorCatcher(() => {
-        item.componentDidMount()
-      }, item)
+      item.componentDidMount()
     }
   })
 }
 
-function getFragmentHostNode (children: VNode[]): Node | null {
-  const child = children[0]
-  if (isArray(child)) {
-    return getFragmentHostNode(child)
-  } else if (isComposite(child) && child.dom == null) {
-    return getFragmentHostNode(child.component._rendered)
-  }
-  return child != null ? child.dom : null
-}
-
-export function reRenderComponent (
-  prev: CompositeComponent,
-  current: CompositeComponent
-) {
-  const component = (current.component = prev.component) as any
+export function reRenderComponent (prev, current) {
+  const component = current.component = prev.component
   const nextProps = current.props
-  const nextContext = current.context
+  const nextContext = component.context
   component._disable = true
-  if (!hasNewLifecycle(component) && isFunction(component.componentWillReceiveProps)) {
-    errorCatcher(() => {
-      component.componentWillReceiveProps(nextProps, nextContext)
-    }, component)
+  if (isFunction(component.componentWillReceiveProps)) {
+    component.componentWillReceiveProps(nextProps, nextContext)
   }
   component._disable = false
   component.prevProps = component.props
@@ -198,59 +103,29 @@ export function reRenderComponent (
   component.prevContext = component.context
   component.props = nextProps
   component.context = nextContext
-  if (!isNullOrUndef(current.ref)) {
-    Ref.update(prev, current)
+  if (isFunction(current.props.ref)) {
+    current.props.ref(component)
   }
-  return updateComponent(component)
-}
-
-function callShouldComponentUpdate (props, state, context, component) {
-  let shouldUpdate = true
-  errorCatcher(() => {
-    shouldUpdate = component.shouldComponentUpdate(props, state, context)
-  }, component)
-  return shouldUpdate
+  updateComponent(component)
+  return component.dom
 }
 
 export function updateComponent (component, isForce = false) {
-  let vnode = component.vnode
-  let dom = vnode.dom
+  const lastDom = component.dom
   const props = component.props
-  let state = component.getState()
+  const state = component.getState()
   const context = component.context
   const prevProps = component.prevProps || props
-  const prevState = component.prevState || component.state
   const prevContext = component.prevContext || context
-
-  const stateFromProps = callGetDerivedStateFromProps(props, state, component)
-
-  if (!isUndefined(stateFromProps)) {
-    state = stateFromProps
-  }
-
   component.props = prevProps
   component.context = prevContext
   let skip = false
-  const onSCU = props.onShouldComponentUpdate
-  if (
-    !isForce &&
-    (
-      (isFunction(component.shouldComponentUpdate) &&
-      callShouldComponentUpdate(props, state, context, component) === false) ||
-      (isFunction(onSCU) && onSCU(prevProps, props) === false)
-    )
-  ) {
+  if (!isForce && isFunction(component.shouldComponentUpdate) &&
+    component.shouldComponentUpdate(props, state, context) === false) {
     skip = true
-  } else if (!hasNewLifecycle(component) && isFunction(component.componentWillUpdate)) {
-    errorCatcher(() => {
-      component.componentWillUpdate(props, state, context)
-    }, component)
+  } else if (isFunction(component.componentWillUpdate)) {
+    component.componentWillUpdate(props, state, context)
   }
-
-  if (!isUndefined(stateFromProps)) {
-    component.state = stateFromProps
-  }
-
   component.props = props
   component.state = state
   component.context = context
@@ -258,90 +133,42 @@ export function updateComponent (component, isForce = false) {
   if (!skip) {
     const lastRendered = component._rendered
     const rendered = renderComponent(component)
-    rendered.parentVNode = vnode
     const childContext = getChildContext(component, context)
-    const snapshot = callGetSnapshotBeforeUpdate(prevProps, prevState, component)
-    let parentDom = lastRendered.dom && lastRendered.dom.parentNode
-    if (isArray(lastRendered)) {
-      const hostNode = getFragmentHostNode(lastRendered)
-      if (hostNode != null) {
-        parentDom = (lastRendered as any).dom = hostNode.parentNode
-      }
-    }
-    dom = vnode.dom = patch(lastRendered, rendered, parentDom || null, childContext)
     component._rendered = rendered
-    if (isFunction(component.componentDidUpdate)) {
-      errorCatcher(() => {
-        component.componentDidUpdate(prevProps, prevState, snapshot)
-      }, component)
-    }
-    while (vnode = vnode.parentVNode) {
-      if ((vnode.vtype & (VType.Composite)) > 0) {
-        vnode.dom = dom
-      }
+    component.dom = updateVNode(rendered, lastRendered, lastDom, childContext)
+    if (component.componentDidUpdate) {
+      component.componentDidUpdate(props, state, context)
     }
   }
   component.prevProps = component.props
   component.prevState = component.state
   component.prevContext = component.context
-  component.clearCallBacks()
+  if (component._pendingCallbacks) {
+    while (component._pendingCallbacks.length) {
+      component._pendingCallbacks.pop().call(component)
+    }
+  }
   flushMount()
-  invokeEffects(component)
-  return dom
 }
 
-export function unmountComponent (vnode: FullComponent) {
+function updateVNode (vnode, lastVNode, lastDom, childContext) {
+  if (isObject(vnode)) {
+    vnode.context = childContext
+  }
+  const patches = diff(lastVNode, vnode)
+  const domNode = patch(lastDom, patches)
+  return domNode
+}
+
+export function unmountComponent (vnode) {
   const component = vnode.component
-  component.hooks.forEach((hook) => {
-    if (isFunction(hook.cleanup)) {
-      hook.cleanup()
-    }
-  })
   if (isFunction(component.componentWillUnmount)) {
-    errorCatcher(() => {
-      (component as any).componentWillUnmount()
-    }, component)
+    component.componentWillUnmount()
   }
-  component._disable = true
-  unmount(component._rendered)
-  if (!isNullOrUndef(vnode.ref)) {
-    Ref.detach(vnode, vnode.ref, vnode.dom as any)
+  const lastRendered = component._rendered
+  updateVNode(null, lastRendered, component.dom, component.context)
+  component.dom = component._rendered = null
+  if (isFunction(vnode.props.ref)) {
+    vnode.props.ref(null)
   }
-}
-
-function callGetDerivedStateFromProps (props, state, inst) {
-  const { getDerivedStateFromProps } = inst.constructor
-  let newState
-    // @TODO show warning
-  errorCatcher(() => {
-    if (isFunction(getDerivedStateFromProps)) {
-      const partialState = getDerivedStateFromProps.call(
-        null,
-        props,
-        state
-      )
-      if (!isUndefined(partialState)) {
-        newState = extend(clone(state), partialState)
-      }
-    }
-  }, inst)
-  return newState
-}
-
-function callGetSnapshotBeforeUpdate (props, state, inst) {
-  const { getSnapshotBeforeUpdate } = inst
-  let snapshot
-  errorCatcher(() => {
-    if (isFunction(getSnapshotBeforeUpdate)) {
-      snapshot = getSnapshotBeforeUpdate.call(inst, props, state)
-    }
-  }, inst)
-  return snapshot
-}
-
-function hasNewLifecycle (component) {
-  if (isFunction(component.constructor.getDerivedStateFromProps)) {
-    return true
-  }
-  return false
 }

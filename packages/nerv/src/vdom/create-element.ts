@@ -1,130 +1,130 @@
+import { isVNode, isVText, isWidget, isStateLess, isHook } from './vnode/types'
+import { isObject, isString, isNumber, isFunction } from '../util'
+import { VirtualNode, IProps } from '../types'
 
-import { isString,isNumber,isBoolean,isArray } from 'lodash'
-import { VirtualNode } from 'nervjs/dist/src/types'
-import { isValidElement } from 'react'
-import { VType,CompositeComponent,isPortal,isNullOrUndef,VNode,EMPTY_OBJ } from '../../../nerv-shared/src'
-import { doc,isSupportSVG } from '../../../nerv-utils/src'
-import { patchProp } from './patch'
-import Ref from './ref'
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
 
-function createElement (
-  vnode: VirtualNode | VirtualNode[],
-  isSvg?: boolean,
-  parentContext?,
-  parentComponent?
-): Element | Text | Comment | Array<Element | Text | Comment>  {
-  let domNode
-  if (isValidElement(vnode)) {
-    const vtype = vnode.vtype
-    if (vtype & (VType.Composite)) {
-      domNode = (vnode as CompositeComponent).init(parentContext, parentComponent)
-    } else if (vtype & VType.Text) {
-      domNode = doc.createTextNode((vnode as any).text);
-      (vnode as any).dom = domNode
-    } else if (vtype & VType.Node) {
-      domNode = mountVNode(vnode as any, isSvg, parentContext, parentComponent)
-    } else if (vtype & VType.Void) {
-      domNode = (vnode as any).dom = doc.createTextNode('')
-    } else if (isPortal(vtype, vnode)) {
-      vnode.type.appendChild(
-        createElement(vnode.children, isSvg, parentContext, parentComponent) as Element
-      )
-      domNode = doc.createTextNode('')
+const doc = document
+function createElement (vnode: VirtualNode, isSvg?: boolean): Element | Text | Comment | DocumentFragment | null {
+  if (isWidget(vnode) || isStateLess(vnode)) {
+    return vnode.init()
+  }
+  if (isString(vnode) || isNumber(vnode)) {
+    return doc.createTextNode(vnode as string)
+  }
+  if (isVText(vnode)) {
+    return doc.createTextNode(vnode.text as string)
+  }
+  if (vnode === null || (vnode as any) === false) {
+    return doc.createComment('Empty dom node')
+  }
+  if (isVNode(vnode)) {
+    if (vnode.isSvg) {
+      isSvg = true
+    } else if (vnode.tagName === 'svg') {
+      isSvg = true
+    } else if (vnode.tagName === 'foreignObject') {
+      isSvg = false
     }
-  } else if (isString(vnode) || isNumber(vnode)) {
-    domNode = doc.createTextNode(vnode as string)
-  } else if (isNullOrUndef(vnode) || isBoolean(vnode)) {
-    domNode = doc.createTextNode('')
-  } else if (isArray(vnode)) {
-    domNode = vnode.map((child) => createElement(child, isSvg, parentContext, parentComponent))
-  } else {
-    throw new Error('Unsupported VNode.')
-  }
-  return domNode
-}
-
-export function mountVNode (vnode: VNode, isSvg?: boolean, parentContext?, parentComponent?) {
-  if (vnode.isSvg) {
-    isSvg = true
-  } else if (vnode.type === 'svg') {
-    isSvg = true
-  /* istanbul ignore next */
-  } else if (!isSupportSVG) {
-    isSvg = false
-  }
-  if (isSvg) {
-    vnode.namespace = SVG_NAMESPACE
-    vnode.isSvg = isSvg
-  }
-  const domNode = !isSvg
-    ? doc.createElement(vnode.type)
-    : doc.createElementNS(vnode.namespace, vnode.type)
-  setProps(domNode, vnode, isSvg as boolean)
-  if (vnode.type === 'foreignObject') {
-    isSvg = false
-  }
-  const children = vnode.children
-  if (isArray(children)) {
-    for (let i = 0, len = children.length; i < len; i++) {
-      mountChild(children[i] as VNode, domNode, parentContext, isSvg, parentComponent)
+    if (isSvg) {
+      vnode.namespace = SVG_NAMESPACE
     }
-  } else {
-    mountChild(children as VNode, domNode, parentContext, isSvg, parentComponent)
-  }
-  vnode.dom = domNode
-  if (vnode.ref !== null) {
-    Ref.attach(vnode, vnode.ref, domNode)
-  }
-  return domNode
-}
-
-export function mountChild (
-  child: VNode,
-  domNode: Element,
-  parentContext: Object,
-  isSvg?: boolean,
-  parentComponent?
-) {
-  child.parentContext = parentContext || EMPTY_OBJ
-  const childNode = createElement(child as VNode, isSvg, parentContext, parentComponent)
-  mountElement(childNode, domNode)
-}
-
-export function mountElement (
-  element: Element | Text | Comment | Array<Element | Text | Comment>,
-  parentNode: Element,
-  refChild?: Node | null
-) {
-  if (isArray(element)) {
-    for (let i = 0; i < element.length; i++) {
-      const el = element[i]
-      mountElement(el, parentNode)
+    const domNode = (vnode.namespace === null) ? doc.createElement(vnode.tagName)
+      : doc.createElementNS ? doc.createElementNS(vnode.namespace, vnode.tagName) : doc.createElement(vnode.tagName)
+    setProps(domNode, vnode.props, isSvg)
+    if (isSvg) {
+      vnode.isSvg = isSvg
     }
-  } else {
-    refChild != null ? parentNode.insertBefore(element, refChild) : parentNode.appendChild(element)
-  }
-}
-
-export function insertElement (
-  element: Element | Text | Comment | Array<Element | Text | Comment>,
-  parentNode: Element,
-  lastDom: Element
-) {
-  if (isArray(element)) {
-    for (let i = 0; i < element.length; i++) {
-      const el = element[i]
-      insertElement(el, parentNode, lastDom)
+    const children = vnode.children
+    if (children.length) {
+      children.forEach((child) => {
+        if (child !== undefined && child !== null && (child as any) !== false && domNode.appendChild) {
+          if (isWidget(child)) {
+            child.parentContext = vnode.parentContext || {}
+          }
+          const childNode = createElement(child, isSvg)
+          if (childNode) {
+            domNode.appendChild(childNode)
+          }
+        }
+      })
     }
-  } else {
-    parentNode.insertBefore(element, lastDom)
+    return domNode
   }
+  if (Array.isArray(vnode)) {
+    const domNode = doc.createDocumentFragment()
+    vnode.forEach((child) => {
+      if (child !== undefined && child !== null && (child as any) !== false && domNode.appendChild) {
+        const childNode = createElement(child, isSvg)
+        if (childNode) {
+          domNode.appendChild(childNode)
+        }
+        return domNode.appendChild(childNode as Element)
+      }
+    })
+    return domNode
+  }
+  return null
 }
 
-function setProps (domNode: Element, vnode: VNode, isSvg: boolean) {
-  const props = vnode.props
+function setProps (domNode: Element, props: IProps, isSvg?: boolean) {
   for (const p in props) {
-    patchProp(domNode, p, null, props[p], null, isSvg)
+    if (p === 'children') {
+      continue
+    }
+    const propValue = props[p]
+    if (isHook(propValue)) {
+      if (propValue.hook) {
+        propValue.hook(domNode, p)
+      }
+      continue
+    } else if (p === 'style') {
+      if (isString(propValue)) {
+        domNode.setAttribute(p, propValue)
+      } else if (isObject(propValue)) {
+        // tslint:disable-next-line:forin
+        for (const s in propValue) {
+          const styleValue = propValue[s]
+          if (styleValue !== undefined) {
+            try {
+              domNode[p][s] = styleValue
+            } catch (err) {
+              console.warn(`Can't set empty style`)
+            }
+          }
+        }
+      }
+      continue
+    } else if (isObject(propValue)) {
+      if (p in domNode) {
+        try {
+          domNode[p] = propValue
+        } catch (err) {
+          console.warn('set prop failed, prop value:', propValue)
+        }
+      } else {
+        domNode.setAttribute(p, propValue)
+      }
+      continue
+    } else if (p !== 'list' && p !== 'type' && !isSvg && p in domNode) {
+      try {
+        domNode[p] = propValue == null ? '' : propValue
+      } catch (err) {
+        console.warn('set prop failed, prop value:', propValue)
+      }
+      if (propValue == null || propValue === false) {
+        domNode.removeAttribute(p)
+      }
+      continue
+    } else {
+      if (propValue == null || propValue === false) {
+        domNode.removeAttribute(p)
+      } else {
+        if (!isFunction(propValue)) {
+          domNode.setAttribute(p, propValue)
+        }
+      }
+    }
   }
 }
 

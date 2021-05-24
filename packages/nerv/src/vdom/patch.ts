@@ -1,671 +1,278 @@
+/* tslint:disable: no-shadowed-variable*/
 /* tslint:disable: no-empty*/
 
-import { unmount, unmountChildren } from './unmount'
-import Ref from './ref'
-import { attachEvent, detachEvent } from '../event'
-import SVGPropertyConfig from './svg-property-config'
-import { isArray,isNumber,isFunction,isString } from 'lodash'
-import { createElement,isValidElement,Props } from 'react'
-import { VType,isNullOrUndef,VNode,isInvalid,VText,EMPTY_CHILDREN } from '../../../nerv-shared/src'
-import { MapClass,isAttrAnEvent } from '../../../nerv-utils/src'
-import { insertElement,mountChild,mountElement } from './create-element'
+import VPatch from './vpatch'
+import { isFunction, isString, isObject, getPrototype } from '../util'
+import shallowEqual from '../util/shallow-equal'
+import domIndex from './dom-index'
+import { isWidget, isHook } from './vnode/types'
+import createElement from './create-element'
+import VText from './vnode/vtext'
+import { IProps, VirtualNode, IVNode, PatchOrder } from '../types'
+import Widget from '../full-component'
+import Stateless from '../stateless-component'
 
-export function patch (
-  lastVnode,
-  nextVnode,
-  parentNode: Element,
-  context: object,
-  isSvg?: boolean
-) {
-  const lastDom = lastVnode.dom
-  let newDom
-  const lastVnodeIsArray = isArray(lastVnode)
-  const nextVnodeisArray = isArray(nextVnode)
-  if (isSameVNode(lastVnode, nextVnode)) {
-    const vtype = nextVnode.vtype
-    if (vtype & VType.Node) {
-      isSvg = isNullOrUndef(isSvg) ? lastVnode.isSvg : isSvg
-      if (isSvg) {
-        nextVnode.isSvg = isSvg
-      }
-      patchProps(lastDom, nextVnode.props, lastVnode.props, lastVnode, isSvg)
-      patchChildren(
-        lastDom,
-        lastVnode.children,
-        nextVnode.children,
-        context,
-        isSvg as boolean
-      )
-      if (nextVnode.ref !== null) {
-        Ref.update(lastVnode, nextVnode, lastDom)
-      }
-      newDom = lastDom
-    } else if ((vtype & (VType.Composite)) > 0) {
-      newDom = nextVnode.update(lastVnode, nextVnode, context)
-    } else if (vtype & VType.Text) {
-      return patchVText(lastVnode, nextVnode)
-    } else if (vtype & VType.Portal) {
-      patchChildren(lastVnode.type, lastVnode.children, nextVnode.children, context, isSvg as boolean)
-    }
-    // @TODO: test case
-    nextVnode.dom = newDom || lastDom
-  } else if (isArray(lastVnode) && isArray(nextVnode)) {
-    patchArrayChildren(lastDom, lastVnode, nextVnode, context, false)
-  } else if (lastVnodeIsArray && !nextVnodeisArray) {
-    patchArrayChildren(parentNode, lastVnode, [nextVnode], context, false)
-  } else if (!lastVnodeIsArray && nextVnodeisArray) {
-    newDom = createElement(nextVnode, isSvg, context)
-    insertElement(newDom, parentNode, lastDom)
-    parentNode.removeChild(lastDom)
-  } else {
-    unmount(lastVnode)
-    newDom = createElement(nextVnode, isSvg, context)
-    if (nextVnode !== null) {
-      nextVnode.dom = newDom
-    }
-    const newDomIsArray = isArray(newDom)
-    const lastDomIsArray = isArray(lastDom)
-    if (newDomIsArray) {
-      insertElement(newDom, parentNode, lastDom)
-      parentNode.removeChild(lastDom)
-    } else if (lastDomIsArray) {
-      parentNode = lastDom[0].parentNode
-      parentNode.insertBefore(newDom, lastDom[0])
-      for (let i = 0; i < lastDom.length; i++) {
-        parentNode.removeChild(lastDom[i])
-      }
-    } else if (parentNode !== null) {
-      if (lastDom != null) {
-        parentNode.replaceChild(newDom, lastDom)
-      } else {
-        parentNode.appendChild(newDom)
-      }
-    }
+function patch (rootNode: Element, patches) {
+  const patchIndices = getPatchIndices(patches)
+  if (patchIndices.length === 0) {
+    return rootNode
   }
-  return newDom
+  const oldTree = patches.old
+  const nodes = domIndex(rootNode, oldTree, patchIndices)
+  patchIndices.forEach((index) => {
+    rootNode = applyPatch(rootNode, nodes[index], patches[index])
+  })
+  return rootNode
 }
 
-function patchArrayChildren (
-  parentDom: Element,
-  lastChildren,
-  nextChildren,
-  context: object,
-  isSvg: boolean
-) {
-  const lastLength = lastChildren.length
-  const nextLength = nextChildren.length
-  if (lastLength === 0) {
-    if (nextLength > 0) {
-      for (let i = 0; i < nextLength; i++) {
-        mountChild(nextChildren[i], parentDom, context, isSvg)
-      }
+function applyPatch (rootNode: Element, domNode: Element, patch: VirtualNode | VirtualNode[]) {
+  if (!domNode) {
+    return rootNode
+  }
+  let newNode
+  if (!Array.isArray(patch)) {
+    patch = [patch]
+  }
+  (patch as VirtualNode[]).forEach((patchItem) => {
+    newNode = patchSingle(domNode, patchItem as any)
+    if (domNode === rootNode) {
+      rootNode = newNode
     }
-  } else if (nextLength === 0) {
-    unmountChildren(lastChildren)
-    parentDom.textContent = ''
-  } else {
-    if (isKeyed(lastChildren, nextChildren)) {
-      patchKeyedChildren(
-        lastChildren,
-        nextChildren,
-        parentDom,
-        context,
-        isSvg,
-        lastLength,
-        nextLength
-      )
-    } else {
-      patchNonKeyedChildren(
-        parentDom,
-        lastChildren,
-        nextChildren,
-        context,
-        isSvg,
-        lastLength,
-        nextLength
-      )
-    }
+  })
+  return rootNode
+}
+
+function patchSingle (domNode: Element, vpatch: VPatch) {
+  const type = vpatch.type
+  const oldVNode = vpatch.vnode
+  const patchObj = vpatch.patch
+
+  switch (type) {
+    case VPatch.VTEXT:
+      return patchVText(domNode as any, patchObj as VText)
+    case VPatch.VNODE:
+      return patchVNode(domNode, patchObj as IVNode)
+    case VPatch.INSERT:
+      return patchInsert(domNode, patchObj as VirtualNode)
+    case VPatch.WIDGET:
+      return patchWidget(domNode, oldVNode as Widget, patchObj as Widget)
+    case VPatch.STATELESS:
+      return patchStateLess(domNode, oldVNode as Stateless, patchObj as Stateless)
+    case VPatch.PROPS:
+      return patchProps(domNode, patchObj as IProps, (oldVNode as IVNode).props, (oldVNode as IVNode).isSvg)
+    case VPatch.ORDER:
+      return patchOrder(domNode, patchObj as PatchOrder)
+    case VPatch.REMOVE:
+      return patchRemove(domNode, oldVNode)
+    default:
+      return domNode
   }
 }
 
-export function patchChildren (
-  parentDom: Element,
-  lastChildren,
-  nextChildren,
-  context: object,
-  isSvg: boolean
-) {
-  // @TODO: is a better way to compatible with react-router?
-  // if (lastChildren === nextChildren) {
-  //   return
-  // }
-  const lastChildrenIsArray = isArray(lastChildren)
-  const nextChildrenIsArray = isArray(nextChildren)
-  if (lastChildrenIsArray && nextChildrenIsArray) {
-    patchArrayChildren(parentDom, lastChildren, nextChildren, context, isSvg)
-  } else if (!lastChildrenIsArray && !nextChildrenIsArray) {
-    patch(lastChildren, nextChildren, parentDom, context, isSvg)
-  } else if (lastChildrenIsArray && !nextChildrenIsArray) {
-    patchArrayChildren(parentDom, lastChildren, [nextChildren], context, isSvg)
-  } else if (!lastChildrenIsArray && nextChildrenIsArray) {
-    patchArrayChildren(parentDom, [lastChildren], nextChildren, context, isSvg)
+function patchVText (domNode: Text, patch: VirtualNode) {
+  if (domNode === null) {
+    return createElement(patch)
+  }
+  if (domNode.splitText !== undefined) {
+    domNode.nodeValue = (patch as VText).text as string
+    return domNode
+  }
+  const parentNode = domNode.parentNode
+  const newNode = createElement(patch)
+  if (parentNode) {
+    parentNode.replaceChild(newNode as Element, domNode)
+  }
+  return newNode
+}
+
+function patchVNode (domNode: Element, patch: VirtualNode) {
+  if (domNode === null) {
+    return createElement(patch)
+  }
+  const parentNode = domNode.parentNode
+  const newNode = createElement(patch)
+  if (parentNode && newNode !== domNode) {
+    parentNode.replaceChild(newNode as Element, domNode)
+  }
+  return newNode
+}
+
+function patchInsert (parentNode: Element, vnode: VirtualNode) {
+  const newNode = createElement(vnode)
+  if (parentNode && newNode) {
+    parentNode.appendChild(newNode)
+  }
+  return parentNode
+}
+
+function patchWidget (domNode: Element, vnode: Widget, patch: Widget) {
+  const isUpdate = isUpdateWidget(vnode, patch)
+  const newNode = isUpdate
+    ? (patch as Widget).update(vnode, domNode) || domNode
+    : createElement(patch)
+  const parentNode = domNode.parentNode
+  if (parentNode && domNode !== newNode) {
+    parentNode.replaceChild(newNode, domNode)
+  }
+  if (!isUpdate && vnode) {
+    destroyWidget(domNode, vnode)
+  }
+  return newNode
+}
+
+function patchStateLess (domNode: Element, vnode: Stateless, patch: Stateless) {
+  const oldProps = vnode.props
+  const newProps = patch.props
+  if (vnode.tagName === patch.tagName && shallowEqual(oldProps, newProps)) {
+    return domNode
+  }
+  const newNode = createElement(patch)
+  const parentNode = domNode.parentNode
+  if (parentNode && domNode !== newNode) {
+    parentNode.replaceChild(newNode as Element, domNode)
+  }
+  return newNode
+}
+
+function destroyWidget (domNode: Element, widget) {
+  if (isFunction(widget.destroy) && isWidget(widget)) {
+    widget.destroy(domNode)
   }
 }
 
-function patchNonKeyedChildren (
-  parentDom: Element,
-  lastChildren,
-  nextChildren,
-  context: object,
-  isSvg: boolean,
-  lastLength: number,
-  nextLength: number
-) {
-  const minLength = Math.min(lastLength, nextLength)
-  let i = 0
-  while (i < minLength) {
-    patch(lastChildren[i], nextChildren[i], parentDom, context, isSvg)
-    i++
-  }
-  if (lastLength < nextLength) {
-    for (i = minLength; i < nextLength; i++) {
-      if (parentDom !== null) {
-        const refVnode = lastChildren[i - 1]
-        mountElement(
-          createElement(
-            nextChildren[i],
-            isSvg,
-            context
-          ),
-          parentDom,
-          isValidElement(refVnode) && refVnode.dom != null
-            ? refVnode.dom.nextSibling
-            : null
-        )
-      }
-    }
-  } else if (lastLength > nextLength) {
-    for (i = minLength; i < lastLength; i++) {
-      unmount(lastChildren[i], parentDom)
-    }
-  }
-}
-
-/**
- *
- * Virtual DOM patching algorithm based on ivi by
- * Boris Kaul (@localvoid)
- * Licensed under the MIT License
- * https://github.com/ivijs/ivi/blob/master/LICENSE
- *
- */
-function patchKeyedChildren (
-  a: VNode[],
-  b: VNode[],
-  dom: Element,
-  context,
-  isSvg: boolean,
-  aLength: number,
-  bLength: number
-) {
-  let aEnd = aLength - 1
-  let bEnd = bLength - 1
-  let aStart = 0
-  let bStart = 0
-  let i
-  let j
-  let aNode
-  let bNode
-  let nextNode
-  let nextPos
-  let node
-  let aStartNode = a[aStart]
-  let bStartNode = b[bStart]
-  let aEndNode = a[aEnd]
-  let bEndNode = b[bEnd]
-
-  // Step 1
-  // tslint:disable-next-line
-  outer: {
-    // Sync nodes with the same key at the beginning.
-    while (aStartNode.key === bStartNode.key) {
-      patch(aStartNode, bStartNode, dom, context, isSvg)
-      aStart++
-      bStart++
-      if (aStart > aEnd || bStart > bEnd) {
-        break outer
-      }
-      aStartNode = a[aStart]
-      bStartNode = b[bStart]
-    }
-
-    // Sync nodes with the same key at the end.
-    while (aEndNode.key === bEndNode.key) {
-      patch(aEndNode, bEndNode, dom, context, isSvg)
-      aEnd--
-      bEnd--
-      if (aStart > aEnd || bStart > bEnd) {
-        break outer
-      }
-      aEndNode = a[aEnd]
-      bEndNode = b[bEnd]
-    }
-  }
-
-  if (aStart > aEnd) {
-    if (bStart <= bEnd) {
-      nextPos = bEnd + 1
-      nextNode = nextPos < bLength ? b[nextPos].dom : null
-      while (bStart <= bEnd) {
-        node = b[bStart]
-        bStart++
-        attachNewNode(dom, createElement(node, isSvg, context), nextNode)
-      }
-    }
-  } else if (bStart > bEnd) {
-    while (aStart <= aEnd) {
-      unmount(a[aStart++], dom)
-    }
-  } else {
-    const aLeft = aEnd - aStart + 1
-    const bLeft = bEnd - bStart + 1
-    const sources = new Array(bLeft)
-
-    // Mark all nodes as inserted.
-    for (i = 0; i < bLeft; i++) {
-      sources[i] = -1
-    }
-    let moved = false
-    let pos = 0
-    let patched = 0
-
-    // When sizes are small, just loop them through
-    if (bLeft <= 4 || aLeft * bLeft <= 16) {
-      for (i = aStart; i <= aEnd; i++) {
-        aNode = a[i]
-        if (patched < bLeft) {
-          for (j = bStart; j <= bEnd; j++) {
-            bNode = b[j]
-            if (aNode.key === bNode.key) {
-              sources[j - bStart] = i
-
-              if (pos > j) {
-                moved = true
-              } else {
-                pos = j
-              }
-              patch(aNode, bNode, dom, context, isSvg)
-              patched++
-              a[i] = null as any
-              break
-            }
-          }
-        }
-      }
-    } else {
-      const keyIndex = new MapClass()
-
-      for (i = bStart; i <= bEnd; i++) {
-        keyIndex.set(b[i].key, i)
-      }
-
-      for (i = aStart; i <= aEnd; i++) {
-        aNode = a[i]
-
-        if (patched < bLeft) {
-          j = keyIndex.get(aNode.key)
-
-          if (j !== undefined) {
-            bNode = b[j]
-            sources[j - bStart] = i
-            if (pos > j) {
-              moved = true
-            } else {
-              pos = j
-            }
-            patch(aNode, bNode, dom, context, isSvg)
-            patched++
-            a[i] = null as any
-          }
-        }
-      }
-    }
-    if (aLeft === aLength && patched === 0) {
-      unmountChildren(a)
-      dom.textContent = ''
-      while (bStart < bLeft) {
-        node = b[bStart]
-        bStart++
-        attachNewNode(dom, createElement(node, isSvg, context), null)
-      }
-    } else {
-      i = aLeft - patched
-      while (i > 0) {
-        aNode = a[aStart++]
-        if (aNode !== null) {
-          unmount(aNode, dom)
-          i--
-        }
-      }
-      if (moved) {
-        const seq = lis(sources)
-        j = seq.length - 1
-        for (i = bLeft - 1; i >= 0; i--) {
-          if (sources[i] === -1) {
-            pos = i + bStart
-            node = b[pos]
-            nextPos = pos + 1
-            attachNewNode(
-              dom,
-              createElement(node, isSvg, context),
-              nextPos < bLength ? b[nextPos].dom : null
-            )
-          } else {
-            if (j < 0 || i !== seq[j]) {
-              pos = i + bStart
-              node = b[pos]
-              nextPos = pos + 1
-              attachNewNode(
-                dom,
-                node.dom,
-                nextPos < bLength ? b[nextPos].dom : null
-              )
-            } else {
-              j--
-            }
-          }
-        }
-      } else if (patched !== bLeft) {
-        for (i = bLeft - 1; i >= 0; i--) {
-          if (sources[i] === -1) {
-            pos = i + bStart
-            node = b[pos]
-            nextPos = pos + 1
-            attachNewNode(
-              dom,
-              createElement(node, isSvg, context),
-              nextPos < bLength ? b[nextPos].dom : null
-            )
-          }
-        }
-      }
-    }
-  }
-}
-
-function attachNewNode (parentDom, newNode, nextNode) {
-  if (isNullOrUndef(nextNode)) {
-    parentDom.appendChild(newNode)
-  } else {
-    parentDom.insertBefore(newNode, nextNode)
-  }
-}
-
-/**
- * Slightly modified Longest Increased Subsequence algorithm, it ignores items that have -1 value, they're representing
- * new items.
- *
- * http://en.wikipedia.org/wiki/Longest_increasing_subsequence
- *
- * @param a Array of numbers.
- * @returns Longest increasing subsequence.
- */
-function lis (a: number[]): number[] {
-  const p = a.slice()
-  const result: number[] = []
-  result.push(0)
-  let u: number
-  let v: number
-
-  for (let i = 0, il = a.length; i < il; ++i) {
-    if (a[i] === -1) {
+function patchProps (domNode: Element, patch: IProps, previousProps: IProps, isSvg?: boolean) {
+  for (const propName in patch) {
+    if (propName === 'children') {
       continue
     }
-
-    const j = result[result.length - 1]
-    if (a[j] < a[i]) {
-      p[i] = j
-      result.push(i)
-      continue
-    }
-
-    u = 0
-    v = result.length - 1
-
-    while (u < v) {
-      const c = ((u + v) / 2) | 0
-      if (a[result[c]] < a[i]) {
-        u = c + 1
-      } else {
-        v = c
-      }
-    }
-
-    if (a[i] < a[result[u]]) {
-      if (u > 0) {
-        p[i] = result[u - 1]
-      }
-      result[u] = i
-    }
-  }
-
-  u = result.length
-  v = result[u - 1]
-
-  while (u-- > 0) {
-    result[u] = v
-    v = p[v]
-  }
-
-  return result
-}
-
-function isKeyed (lastChildren: VNode[], nextChildren: VNode[]): boolean {
-  return (
-    nextChildren.length > 0 &&
-    !isNullOrUndef(nextChildren[0]) &&
-    !isNullOrUndef(nextChildren[0].key) &&
-    lastChildren.length > 0 &&
-    !isNullOrUndef(lastChildren[0]) &&
-    !isNullOrUndef(lastChildren[0].key)
-  )
-}
-
-function isSameVNode (a, b) {
-  if (isInvalid(a) || isInvalid(b) || isArray(a) || isArray(b)) {
-    return false
-  }
-  return a.type === b.type && a.vtype === b.vtype && a.key === b.key
-}
-
-function patchVText (lastVNode: VText, nextVNode: VText) {
-  const dom = lastVNode.dom
-  if (dom === null) {
-    return
-  }
-  const nextText = nextVNode.text
-  nextVNode.dom = dom
-
-  if (lastVNode.text !== nextText) {
-    dom.nodeValue = nextText as string
-  }
-  return dom
-}
-
-const skipProps = {
-  children: 1,
-  key: 1,
-  ref: 1,
-  owner: 1
-}
-
-const IS_NON_DIMENSIONAL = /acit|ex(?:s|g|n|p|$)|rph|ows|mnc|ntw|ine[ch]|zoo|^ord/i
-
-function setStyle (domStyle, style, value) {
-  if (isNullOrUndef(value) || (isNumber(value) && isNaN(value))) {
-    domStyle[style] = ''
-    return
-  }
-  if (style === 'float') {
-    domStyle['cssFloat'] = value
-    domStyle['styleFloat'] = value
-    return
-  }
-  domStyle[style] =
-    !isNumber(value) || IS_NON_DIMENSIONAL.test(style) ? value : value + 'px'
-}
-
-function patchEvent (
-  eventName: string,
-  lastEvent: Function,
-  nextEvent: Function,
-  domNode: Element
-) {
-  if (lastEvent !== nextEvent) {
-    if (isFunction(lastEvent)) {
-      detachEvent(domNode, eventName, lastEvent)
-    }
-    attachEvent(domNode, eventName, nextEvent)
-  }
-}
-
-function patchStyle (lastAttrValue: CSSStyleSheet, nextAttrValue: CSSStyleSheet, dom: HTMLElement) {
-  const domStyle = dom.style
-  let style
-  let value
-
-  if (isString(nextAttrValue)) {
-    domStyle.cssText = nextAttrValue
-    return
-  }
-  if (!isNullOrUndef(lastAttrValue) && !isString(lastAttrValue)) {
-    for (style in nextAttrValue) {
-      value = nextAttrValue[style]
-      if (value !== lastAttrValue[style]) {
-        setStyle(domStyle, style, value)
-      }
-    }
-    for (style in lastAttrValue) {
-      if (isNullOrUndef(nextAttrValue[style])) {
-        domStyle[style] = ''
-      }
-    }
-  } else {
-    for (style in nextAttrValue) {
-      value = nextAttrValue[style]
-      setStyle(domStyle, style, value)
-    }
-  }
-}
-
-export function patchProp (
-  domNode: Element,
-  prop: string,
-  lastValue,
-  nextValue,
-  lastVnode: VNode | null,
-  isSvg?: boolean
-) {
-  // fix the value update for textarea/input
-  if (lastValue !== nextValue || prop === 'value') {
-    if (prop === 'className') {
-      prop = 'class'
-    }
-    if (skipProps[prop] === 1) {
-      return
-    } else if (prop === 'class' && !isSvg) {
-      domNode.className = nextValue
-    } else if (prop === 'dangerouslySetInnerHTML') {
-      const lastHtml = lastValue && lastValue.__html
-      const nextHtml = nextValue && nextValue.__html
-
-      if (lastHtml !== nextHtml) {
-        if (!isNullOrUndef(nextHtml)) {
-          if (
-            isValidElement(lastVnode) &&
-            lastVnode.children !== EMPTY_CHILDREN
-          ) {
-            unmountChildren(lastVnode.children)
-            lastVnode.children = []
-          }
-          domNode.innerHTML = nextHtml
-        }
-      }
-    } else if (isAttrAnEvent(prop)) {
-      patchEvent(prop, lastValue, nextValue, domNode)
-    } else if (prop === 'style') {
-      patchStyle(lastValue, nextValue, domNode as HTMLElement)
-    } else if (
-      prop !== 'list' &&
-      prop !== 'type' &&
-      !isSvg &&
-      prop in domNode
-    ) {
-      setProperty(domNode, prop, nextValue == null ? '' : nextValue)
-      if (nextValue == null || nextValue === false) {
-        domNode.removeAttribute(prop)
-      }
-    } else if (isNullOrUndef(nextValue) || nextValue === false) {
-      domNode.removeAttribute(prop)
-    } else {
-      const namespace = SVGPropertyConfig.DOMAttributeNamespaces[prop]
-      if (isSvg && namespace) {
-        if (nextValue) {
-          domNode.setAttributeNS(namespace, prop, nextValue)
+    const propValue = patch[propName]
+    const previousValue = previousProps[propName]
+    if (propValue == null || propValue === false) {
+      if (isHook(previousValue) && previousValue.unhook) {
+        previousValue.unhook(domNode, propName, propValue)
+        continue
+      } else if (propName === 'style') {
+        if (isString(previousValue)) {
+          // tslint:disable-next-line:forin
+          // FIX: previousValue is not iterable
+          // for (const styleName in previousValue) {
+          //   domNode.style[styleName] = ''
+          // }
         } else {
-          const colonPosition = prop.indexOf(':')
-          const localName =
-            colonPosition > -1 ? prop.substr(colonPosition + 1) : prop
-          domNode.removeAttributeNS(namespace, localName)
+          domNode.removeAttribute(propName)
         }
-      } else {
-        if (!isFunction(nextValue)) {
-          domNode.setAttribute(prop, nextValue)
-        }
-        // WARNING: Non-event attributes with function values:
-        // https://reactjs.org/blog/2017/09/08/dom-attributes-in-react-16.html#changes-in-detail
-      }
-    }
-  }
-}
-
-export function setProperty (node, name, value) {
-  try {
-    node[name] = value
-  } catch (e) {}
-}
-
-function patchProps (
-  domNode: Element,
-  nextProps: Props,
-  previousProps: Props,
-  lastVnode: VNode,
-  isSvg?: boolean
-) {
-  for (const propName in previousProps) {
-    const value = previousProps[propName]
-    if (isNullOrUndef(nextProps[propName]) && !isNullOrUndef(value)) {
-      if (isAttrAnEvent(propName)) {
-        detachEvent(domNode, propName, value)
-      } else if (propName === 'dangerouslySetInnerHTML') {
-        domNode.textContent = ''
-      } else if (propName === 'className') {
-        domNode.removeAttribute('class')
+        continue
+      } else if (propName in domNode) {
+        domNode[propName] = isString(previousValue) ? '' : null
+        domNode.removeAttribute(propName)
       } else {
         domNode.removeAttribute(propName)
       }
+    } else {
+      if (isHook(propValue)) {
+        if (isHook(previousValue) && previousValue.unhook) {
+          previousValue.unhook(domNode, propName, propValue)
+        }
+        if (propValue && propValue.hook) {
+          propValue.hook(domNode, propName, previousValue)
+        }
+        continue
+      } else if (propName === 'style') {
+        if (isString(propValue)) {
+          domNode.setAttribute(propName, propValue)
+        } else {
+          // tslint:disable-next-line:forin
+          for (const styleName in propValue) {
+            const styleValue = propValue[styleName]
+            if (styleValue != null && styleValue !== false) {
+              try {
+                domNode[propName][styleName] = styleValue
+              } catch (err) {}
+            }
+          }
+        }
+        continue
+      } else if (isObject(propValue)) {
+        if (previousValue && isObject(previousValue) &&
+          getPrototype(previousValue) !== getPrototype(propValue)) {
+          if (propName in domNode) {
+            try {
+              domNode[propName] = propValue
+            } catch (err) {}
+          } else {
+            domNode.setAttribute(propName, propValue)
+          }
+        }
+        continue
+      } else if (propName !== 'list' && propName !== 'type' && !isSvg && propName in domNode) {
+        try {
+          domNode[propName] = propValue
+        } catch (err) {}
+        continue
+      } else if (!isFunction(propValue)) {
+        domNode.setAttribute(propName, propValue)
+      }
     }
   }
-  for (const propName in nextProps) {
-    patchProp(
-      domNode,
-      propName,
-      previousProps[propName],
-      nextProps[propName],
-      lastVnode,
-      isSvg
-    )
+  return domNode
+}
+
+function patchOrder (domNode: Element, patch: PatchOrder) {
+  const { removes, inserts } = patch
+  const childNodes = domNode.childNodes
+  const keyMap = {}
+  let node, remove, insert
+  for (let i = 0; i < removes.length; i++) {
+    remove = removes[i]
+    node = childNodes[remove.from]
+    if (remove.key) {
+      keyMap[remove.key] = node
+    }
+    domNode.removeChild(node)
   }
+
+  let length = childNodes.length
+  for (let j = 0; j < inserts.length; j++) {
+    insert = inserts[j]
+    node = keyMap[insert.key]
+    domNode.insertBefore(node, insert.to >= length++ ? null : childNodes[insert.to])
+  }
+  return domNode
+}
+
+function patchRemove (domNode: Element, vnode: VirtualNode) {
+  const parentNode = domNode.parentNode
+  if (parentNode) {
+    parentNode.removeChild(domNode)
+  }
+  if (isWidget(vnode)) {
+    destroyWidget(domNode, vnode)
+  }
+  return null
+}
+
+function isUpdateWidget (a: VirtualNode, b: VirtualNode) {
+  if (isWidget(a) && isWidget(b)) {
+    const keyA = a.props.key
+    const keyB = b.props.key
+    if ('name' in a && 'name' in b) {
+      return a.name === b.name && keyA === keyB
+    }
+    return a.init === b.init && keyA === keyB
+  }
+  return false
+}
+
+function getPatchIndices (patches) {
+  const indices: number[] = []
+  if (patches) {
+    for (const i in patches) {
+      if (i !== 'old' && patches.hasOwnProperty(i)) {
+        indices.push(Number(i))
+      }
+    }
+  }
+  return indices
 }
 
 export default patch
